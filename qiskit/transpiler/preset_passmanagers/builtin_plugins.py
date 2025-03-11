@@ -557,6 +557,16 @@ class NoneRoutingPassManager(PassManagerStagePlugin):
         )
 
 
+def _unroll_condition_(property_set):
+    return not property_set["all_gates_in_basis"]
+
+def _opt_control_optimization_level_not_0(property_set):
+    return (not property_set["depth_fixed_point"]) or (
+        not property_set["size_fixed_point"]
+    )
+def _opt_control_optimization_level_3(property_set):
+    return not property_set["optimization_loop_minimum_point"]
+
 class OptimizationPassManager(PassManagerStagePlugin):
     """Plugin class for optimization stage"""
 
@@ -576,10 +586,8 @@ class OptimizationPassManager(PassManagerStagePlugin):
                 MinimumPoint(["depth", "size"], "optimization_loop"),
             ]
 
-            def _opt_control(property_set):
-                return (not property_set["depth_fixed_point"]) or (
-                    not property_set["size_fixed_point"]
-                )
+            _opt_control = _opt_control_optimization_level_not_0
+
 
             translation = plugin_manager.get_passmanager_stage(
                 "translation",
@@ -656,8 +664,7 @@ class OptimizationPassManager(PassManagerStagePlugin):
                         CommutativeCancellation(target=pass_manager_config.target),
                     ]
 
-                def _opt_control(property_set):
-                    return not property_set["optimization_loop_minimum_point"]
+                _opt_control = _opt_control_optimization_level_3
 
             else:
                 raise TranspilerError(f"Invalid optimization_level: {optimization_level}")
@@ -665,13 +672,11 @@ class OptimizationPassManager(PassManagerStagePlugin):
             unroll = translation.to_flow_controller()
 
             # Build nested Flow controllers
-            def _unroll_condition(property_set):
-                return not property_set["all_gates_in_basis"]
 
             # Check if any gate is not in the basis, and if so, run unroll passes
             _unroll_if_out_of_basis = [
                 GatesInBasis(pass_manager_config.basis_gates, target=pass_manager_config.target),
-                ConditionalController(unroll, condition=_unroll_condition),
+                ConditionalController(unroll, condition=_unroll_condition_),
             ]
 
             if optimization_level == 3:
@@ -782,31 +787,32 @@ class DefaultSchedulingPassManager(PassManagerStagePlugin):
 class DefaultLayoutPassManager(PassManagerStagePlugin):
     """Plugin class for default layout stage."""
 
+    def _choose_layout_condition(self, property_set):
+        return not property_set["layout"]
+
+    def _layout_not_perfect(self, property_set):
+        """Return ``True`` if the first attempt at layout has been checked and found to be
+        imperfect.  In this case, perfection means "does not require any swap routing"."""
+        return property_set["is_swap_mapped"] is not None and not property_set["is_swap_mapped"]
+
+    def _vf2_match_not_found(self, property_set):
+        # If a layout hasn't been set by the time we run vf2 layout we need to
+        # run layout
+        if property_set["layout"] is None:
+            return True
+        # if VF2 layout stopped for any reason other than solution found we need
+        # to run layout since VF2 didn't converge.
+        return (
+            property_set["VF2Layout_stop_reason"] is not None
+            and property_set["VF2Layout_stop_reason"] is not VF2LayoutStopReason.SOLUTION_FOUND
+        )
+
+    def _swap_mapped(self, property_set):
+        return property_set["final_layout"] is None
+
     def pass_manager(self, pass_manager_config, optimization_level=None) -> PassManager:
         _given_layout = SetLayout(pass_manager_config.initial_layout)
 
-        def _choose_layout_condition(property_set):
-            return not property_set["layout"]
-
-        def _layout_not_perfect(property_set):
-            """Return ``True`` if the first attempt at layout has been checked and found to be
-            imperfect.  In this case, perfection means "does not require any swap routing"."""
-            return property_set["is_swap_mapped"] is not None and not property_set["is_swap_mapped"]
-
-        def _vf2_match_not_found(property_set):
-            # If a layout hasn't been set by the time we run vf2 layout we need to
-            # run layout
-            if property_set["layout"] is None:
-                return True
-            # if VF2 layout stopped for any reason other than solution found we need
-            # to run layout since VF2 didn't converge.
-            return (
-                property_set["VF2Layout_stop_reason"] is not None
-                and property_set["VF2Layout_stop_reason"] is not VF2LayoutStopReason.SOLUTION_FOUND
-            )
-
-        def _swap_mapped(property_set):
-            return property_set["final_layout"] is None
 
         if pass_manager_config.target is None:
             coupling_map = pass_manager_config.coupling_map
@@ -818,7 +824,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
         if optimization_level == 0:
             layout.append(
                 ConditionalController(
-                    TrivialLayout(coupling_map), condition=_choose_layout_condition
+                    TrivialLayout(coupling_map), condition=self._choose_layout_condition
                 )
             )
             layout += common.generate_embed_passmanager(coupling_map)
@@ -827,7 +833,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
             layout.append(
                 ConditionalController(
                     [TrivialLayout(coupling_map), CheckMap(coupling_map)],
-                    condition=_choose_layout_condition,
+                    condition=self._choose_layout_condition,
                 )
             )
             with warnings.catch_warnings():
@@ -845,7 +851,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                     target=pass_manager_config.target,
                     max_trials=2500,  # Limits layout scoring to < 600ms on ~400 qubit devices
                 )
-            layout.append(ConditionalController(choose_layout_1, condition=_layout_not_perfect))
+            layout.append(ConditionalController(choose_layout_1, condition=self._layout_not_perfect))
 
             trial_count = _get_trial_count(5)
 
@@ -866,7 +872,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                         ),
                         choose_layout_2,
                     ],
-                    condition=_vf2_match_not_found,
+                    condition=self._vf2_match_not_found,
                 )
             )
         elif optimization_level == 2:
@@ -886,7 +892,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                     max_trials=2500,  # Limits layout scoring to < 600ms on ~400 qubit devices
                 )
             layout.append(
-                ConditionalController(choose_layout_0, condition=_choose_layout_condition)
+                ConditionalController(choose_layout_0, condition=self._choose_layout_condition)
             )
 
             trial_count = _get_trial_count(20)
@@ -908,7 +914,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                         ),
                         choose_layout_1,
                     ],
-                    condition=_vf2_match_not_found,
+                    condition=self._vf2_match_not_found,
                 )
             )
         elif optimization_level == 3:
@@ -928,7 +934,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                     max_trials=250000,  # Limits layout scoring to < 60s on ~400 qubit devices
                 )
             layout.append(
-                ConditionalController(choose_layout_0, condition=_choose_layout_condition)
+                ConditionalController(choose_layout_0, condition=self._choose_layout_condition)
             )
 
             trial_count = _get_trial_count(20)
@@ -950,14 +956,14 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                         ),
                         choose_layout_1,
                     ],
-                    condition=_vf2_match_not_found,
+                    condition=self._vf2_match_not_found,
                 )
             )
         else:
             raise TranspilerError(f"Invalid optimization level: {optimization_level}")
 
         embed = common.generate_embed_passmanager(coupling_map)
-        layout.append(ConditionalController(embed.to_flow_controller(), condition=_swap_mapped))
+        layout.append(ConditionalController(embed.to_flow_controller(), condition=self._swap_mapped))
         return layout
 
 
@@ -1024,14 +1030,16 @@ class DenseLayoutPassManager(PassManagerStagePlugin):
 class SabreLayoutPassManager(PassManagerStagePlugin):
     """Plugin class for sabre layout stage."""
 
+    def _choose_layout_condition(self, property_set):
+        return not property_set["layout"]
+
+    def _swap_mapped(self, property_set):
+        return property_set["final_layout"] is None
+
     def pass_manager(self, pass_manager_config, optimization_level=None) -> PassManager:
         _given_layout = SetLayout(pass_manager_config.initial_layout)
 
-        def _choose_layout_condition(property_set):
-            return not property_set["layout"]
 
-        def _swap_mapped(property_set):
-            return property_set["final_layout"] is None
 
         if pass_manager_config.target is None:
             coupling_map = pass_manager_config.coupling_map
@@ -1098,11 +1106,11 @@ class SabreLayoutPassManager(PassManagerStagePlugin):
                     ),
                     layout_pass,
                 ],
-                condition=_choose_layout_condition,
+                condition=self._choose_layout_condition,
             )
         )
         embed = common.generate_embed_passmanager(coupling_map)
-        layout.append(ConditionalController(embed.to_flow_controller(), condition=_swap_mapped))
+        layout.append(ConditionalController(embed.to_flow_controller(), condition=self._swap_mapped))
         return layout
 
 
