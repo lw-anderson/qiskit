@@ -270,6 +270,47 @@ def _apply_post_layout_condition(property_set):
     )
 
 
+# Functions required in generate_routing_passmanager
+def _run_post_layout_condition_(property_set, check_trivial: bool):
+    # If we check trivial layout and the found trivial layout was not perfect also
+    # ensure VF2 initial layout was not used before running vf2 post layout
+    if not check_trivial or _layout_not_perfect(property_set):
+        vf2_stop_reason = property_set["VF2Layout_stop_reason"]
+        if vf2_stop_reason is None or vf2_stop_reason != VF2LayoutStopReason.SOLUTION_FOUND:
+            return True
+    return False
+
+
+def _run_post_layout_condition_check_trivial_true(property_set):
+    return _run_post_layout_condition_(property_set, True)
+
+
+def _run_post_layout_condition_check_trivial_false(property_set):
+    return _run_post_layout_condition_(property_set, False)
+
+
+def _swap_condition_(property_set):
+    return not property_set["routing_not_needed"]
+
+
+def _filter_fn_(node):
+    return node.label != "qiskit.transpiler.internal.routing.protection.barrier"
+
+
+def _direction_condition_(property_set):
+    return not property_set["is_direction_mapped"]
+
+
+# @deprecate_arg(
+#     name="backend_properties",
+#     since="1.4",
+#     package_name="Qiskit",
+#     removal_timeline="in Qiskit 2.0",
+#     additional_msg="The BackendProperties data structure has been deprecated and will be "
+#                    "removed in Qiskit 2.0. The required `target` input argument should be used "
+#                    "instead. You can use Target.from_configuration() to build the target from the properties "
+#                    "object, but in 2.0 you will need to generate a target directly.",
+# )
 def generate_routing_passmanager(
     routing_pass,
     target,
@@ -312,23 +353,16 @@ def generate_routing_passmanager(
         PassManager: The routing pass manager
     """
 
-    def _run_post_layout_condition(property_set):
-        # If we check trivial layout and the found trivial layout was not perfect also
-        # ensure VF2 initial layout was not used before running vf2 post layout
-        if not check_trivial or _layout_not_perfect(property_set):
-            vf2_stop_reason = property_set["VF2Layout_stop_reason"]
-            if vf2_stop_reason is None or vf2_stop_reason != VF2LayoutStopReason.SOLUTION_FOUND:
-                return True
-        return False
+    if check_trivial:
+        run_post_layout_condition = _run_post_layout_condition_check_trivial_true
+    else:
+        run_post_layout_condition = _run_post_layout_condition_check_trivial_false
 
     routing = PassManager()
     if target is not None:
         routing.append(CheckMap(target, property_set_field="routing_not_needed"))
     else:
         routing.append(CheckMap(coupling_map, property_set_field="routing_not_needed"))
-
-    def _swap_condition(property_set):
-        return not property_set["routing_not_needed"]
 
     if use_barrier_before_measurement:
         routing.append(
@@ -339,11 +373,11 @@ def generate_routing_passmanager(
                     ),
                     routing_pass,
                 ],
-                condition=_swap_condition,
+                condition=_swap_condition_,
             )
         )
     else:
-        routing.append(ConditionalController(routing_pass, condition=_swap_condition))
+        routing.append(ConditionalController(routing_pass, condition=_swap_condition_))
 
     is_vf2_fully_bounded = vf2_call_limit and vf2_max_trials
     if (target is not None or backend_properties is not None) and is_vf2_fully_bounded:
@@ -358,15 +392,12 @@ def generate_routing_passmanager(
                     max_trials=vf2_max_trials,
                     strict_direction=False,
                 ),
-                condition=_run_post_layout_condition,
+                condition=run_post_layout_condition,
             )
         )
         routing.append(ConditionalController(ApplyLayout(), condition=_apply_post_layout_condition))
 
-    def filter_fn(node):
-        return node.label != "qiskit.transpiler.internal.routing.protection.barrier"
-
-    routing.append([FilterOpNodes(filter_fn)])
+    routing.append([FilterOpNodes(_filter_fn_)])
 
     return routing
 
@@ -390,13 +421,10 @@ def generate_pre_op_passmanager(target=None, coupling_map=None, remove_reset_in_
     if coupling_map:
         pre_opt.append(CheckGateDirection(coupling_map, target=target))
 
-        def _direction_condition(property_set):
-            return not property_set["is_direction_mapped"]
-
         pre_opt.append(
             ConditionalController(
                 [GateDirection(coupling_map, target=target)],
-                condition=_direction_condition,
+                condition=_direction_condition_,
             )
         )
     if remove_reset_in_zero:
@@ -404,6 +432,16 @@ def generate_pre_op_passmanager(target=None, coupling_map=None, remove_reset_in_
     return pre_opt
 
 
+# @deprecate_arg(
+#     name="backend_properties",
+#     since="1.4",
+#     package_name="Qiskit",
+#     removal_timeline="in Qiskit 2.0",
+#     additional_msg="The BackendProperties data structure has been deprecated and will be "
+#                    "removed in Qiskit 2.0. The required `target` input argument should be used "
+#                    "instead. You can use Target.from_configuration() to build the target from the properties "
+#                    "object, but in 2.0 you will need to generate a target directly.",
+# )
 def generate_translation_passmanager(
     target,
     basis_gates=None,
@@ -519,6 +557,10 @@ def generate_translation_passmanager(
     return PassManager(unroll)
 
 
+def _require_alignment_(property_set):
+    return property_set["reschedule_required"]
+
+# @deprecate_pulse_arg("inst_map", predicate=lambda inst_map: inst_map is not None)
 def generate_scheduling(
     instruction_durations, scheduling_method, timing_constraints, inst_map, target=None
 ):
@@ -574,9 +616,6 @@ def generate_scheduling(
     ):
         # Run alignment analysis regardless of scheduling.
 
-        def _require_alignment(property_set):
-            return property_set["reschedule_required"]
-
         scheduling.append(
             InstructionDurationCheck(
                 acquire_alignment=timing_constraints.acquire_alignment,
@@ -591,7 +630,7 @@ def generate_scheduling(
                     pulse_alignment=timing_constraints.pulse_alignment,
                     target=target,
                 ),
-                condition=_require_alignment,
+                condition=_require_alignment_,
             )
         )
         scheduling.append(
