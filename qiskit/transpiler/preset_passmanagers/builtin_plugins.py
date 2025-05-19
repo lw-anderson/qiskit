@@ -775,7 +775,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
                 target=pass_manager_config.target,
                 max_trials=2500,  # Limits layout scoring to < 600ms on ~400 qubit devices
             )
-            layout.append(ConditionalController(choose_layout_1, condition=_layout_not_perfect))
+            layout.append(ConditionalController(choose_layout_1, condition=self._layout_not_perfect))
 
             trial_count = _get_trial_count(5)
 
