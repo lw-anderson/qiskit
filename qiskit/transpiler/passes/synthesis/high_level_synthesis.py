@@ -49,6 +49,10 @@ if typing.TYPE_CHECKING:
     from qiskit.dagcircuit import DAGOpNode
 
 
+def qc_size(qc):
+    return qc.size()
+
+
 class HLSConfig:
     """The high-level-synthesis config allows to specify a list of "methods" used by
     :class:`~.HighLevelSynthesis` transformation pass to synthesize different types
@@ -122,7 +126,7 @@ class HLSConfig:
         self.use_default_on_unspecified = use_default_on_unspecified
         self.plugin_selection = plugin_selection
         self.plugin_evaluation_fn = (
-            plugin_evaluation_fn if plugin_evaluation_fn is not None else lambda qc: qc.size()
+            plugin_evaluation_fn if plugin_evaluation_fn is not None else qc_size
         )
         self.methods = {}
 
